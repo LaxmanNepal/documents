@@ -30,7 +30,7 @@
   async function status() {
     if (!gateway) throw new Error('Google Drive gateway is not configured.');
     const token = await accessToken();
-    const response = await fetch(gateway, { headers: { Authorization: `Bearer ${token}` } });
+    const response = await fetch(gateway, { headers: { Authorization: `Bearer ${token}` });
     if (!response.ok) throw new Error('Google Drive status check failed.');
     return response.json();
   }
@@ -58,6 +58,7 @@
     download,
     move: (fileId, folderId) => request('move', { fileId, folderId }),
     trash: (fileId) => request('trash', { fileId }),
+    restore: (fileId) => request('restore', { fileId }),
     remove: (fileId) => request('delete', { fileId })
   };
 })();
