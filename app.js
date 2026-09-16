@@ -1,101 +1,41 @@
-const cfg = window.VAULT_CONFIG || {};
-const configured = cfg.supabaseUrl && !cfg.supabaseUrl.includes('YOUR_') && cfg.supabaseAnonKey && !cfg.supabaseAnonKey.includes('YOUR_');
-const supabase = configured ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey) : null;
-const bucket = cfg.bucket || 'documents';
-const maxBytes = (Number(cfg.maxFileSizeMB) || 50) * 1024 * 1024;
-let docs = [], activeCategory = 'All', activePreview = null;
-
-const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const fmtSize = n => { if (!n) return '0 B'; const u=['B','KB','MB','GB']; const i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),u.length-1); return `${(n/1024**i).toFixed(i?1:0)} ${u[i]}`; };
-const iconFor = mime => mime?.includes('pdf') ? 'PDF' : mime?.startsWith('image/') ? 'IMG' : mime?.includes('word') ? 'DOC' : mime?.includes('sheet') ? 'XLS' : 'FILE';
-const toast = msg => { const el=$('#toast'); el.textContent=msg; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2600); };
-const authMsg = (msg, error=false) => { $('#authMessage').textContent=msg; $('#authMessage').style.color=error?'#ffb6b6':''; };
-
-function showApp(session){
-  $('#authView').classList.add('hidden'); $('#appView').classList.remove('hidden');
-  $('#userEmail').textContent=session.user.email || 'Authenticated'; loadDocs();
-}
-function showAuth(){ $('#appView').classList.add('hidden'); $('#authView').classList.remove('hidden'); }
-
-$('#loginForm').addEventListener('submit', async e=>{
-  e.preventDefault();
-  if(!supabase){ authMsg('Setup required: create config.js from config.example.js.', true); return; }
-  authMsg('Unlocking…');
-  const {error}=await supabase.auth.signInWithPassword({email:$('#email').value.trim(),password:$('#password').value});
-  if(error) authMsg(error.message,true); else authMsg('');
-});
-$('#logoutBtn').onclick=async()=>{ if(supabase) await supabase.auth.signOut(); showAuth(); };
-
-async function loadDocs(){
-  if(!supabase) return;
-  const {data,error}=await supabase.from('documents').select('*').order('created_at',{ascending:false});
-  if(error){toast(error.message);return;} docs=data||[]; render();
-}
-function render(){
-  const q=$('#search').value.trim().toLowerCase();
-  const filtered=docs.filter(d=>(activeCategory==='All'||d.category===activeCategory)&&(!q||`${d.name} ${d.notes||''} ${d.category}`.toLowerCase().includes(q)));
-  $('#statDocs').textContent=docs.length;
-  $('#statSize').textContent=fmtSize(docs.reduce((a,d)=>a+(Number(d.size_bytes)||0),0));
-  $('#statFav').textContent=docs.filter(d=>d.favorite).length;
-  $('#emptyState').classList.toggle('hidden',docs.length>0);
-  $('#documentGrid').innerHTML=filtered.map(doc=>`<article class="doc glass">
-    <div class="doc-top"><div class="file-icon">${iconFor(doc.mime_type)}</div><button class="fav ${doc.favorite?'active':''}" data-fav="${doc.id}" title="Favorite">★</button></div>
-    <h4 title="${esc(doc.name)}">${esc(doc.name)}</h4><div class="doc-meta">${esc(doc.category)} · ${fmtSize(Number(doc.size_bytes))} · ${new Date(doc.created_at).toLocaleDateString()}</div>
-    <p class="doc-note">${esc(doc.notes||'No notes added.')}</p>
-    <div class="doc-actions"><button data-preview="${doc.id}">Preview</button><button data-download="${doc.id}">Download</button></div>
-  </article>`).join('');
-  $('#emptyState').classList.toggle('hidden',filtered.length!==0 || docs.length===0 ? docs.length!==0 : false);
-  if(docs.length>0 && filtered.length===0) $('#documentGrid').innerHTML='<div class="empty glass" style="grid-column:1/-1"><div>⌕</div><h3>No matching documents</h3><p class="muted">Try another search or category.</p></div>';
-  document.querySelectorAll('[data-fav]').forEach(b=>b.onclick=()=>toggleFavorite(b.dataset.fav));
-  document.querySelectorAll('[data-preview]').forEach(b=>b.onclick=()=>previewDoc(b.dataset.preview));
-  document.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>downloadDoc(b.dataset.download));
-}
-$('#search').addEventListener('input',render);
-$('#filters').addEventListener('click',e=>{const b=e.target.closest('.filter');if(!b)return;activeCategory=b.dataset.category;document.querySelectorAll('.filter').forEach(x=>x.classList.remove('active'));b.classList.add('active');render();});
-
-async function toggleFavorite(id){
-  const d=docs.find(x=>x.id===id); if(!d)return;
-  const {error}=await supabase.from('documents').update({favorite:!d.favorite}).eq('id',id);
-  if(error)toast(error.message);else{d.favorite=!d.favorite;render();}
-}
-function openDialog(id){$(id).showModal();}
-document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$(b.dataset.close).close());
-$('#uploadBtn').onclick=()=>{ $('#uploadForm').reset(); $('#uploadMessage').textContent=''; $('#uploadProgress').classList.add('hidden'); openDialog('uploadDialog'); };
-$('#emptyUpload').onclick=()=>$('#uploadBtn').click();
-
-$('#uploadForm').addEventListener('submit',async e=>{
-  e.preventDefault();
-  const file=$('#fileInput').files[0]; if(!file)return;
-  if(file.size>maxBytes){$('#uploadMessage').textContent=`File is larger than ${cfg.maxFileSizeMB||50} MB.`;return;}
-  const {data:{user}}=await supabase.auth.getUser(); if(!user)return;
-  $('#uploadProgress').classList.remove('hidden'); $('#uploadProgress span').style.width='20%'; $('#uploadMessage').textContent='Uploading securely…';
-  const safe=file.name.replace(/[^a-zA-Z0-9._-]/g,'_'); const path=`${user.id}/${crypto.randomUUID()}-${safe}`;
-  const up=await supabase.storage.from(bucket).upload(path,file,{contentType:file.type||'application/octet-stream',upsert:false});
-  if(up.error){$('#uploadMessage').textContent=up.error.message;$('#uploadProgress').classList.add('hidden');return;}
-  $('#uploadProgress span').style.width='75%';
-  const ins=await supabase.from('documents').insert({user_id:user.id,name:file.name,storage_path:path,mime_type:file.type||'application/octet-stream',size_bytes:file.size,category:$('#categoryInput').value,notes:$('#notesInput').value.trim()});
-  if(ins.error){await supabase.storage.from(bucket).remove([path]);$('#uploadMessage').textContent=ins.error.message;return;}
-  $('#uploadProgress span').style.width='100%'; $('#uploadMessage').textContent='Uploaded.'; setTimeout(()=>{$('#uploadDialog').close();loadDocs();toast('Document added to your vault.');},350);
-});
-
-async function signedUrl(d){
-  const {data,error}=await supabase.storage.from(bucket).createSignedUrl(d.storage_path,300);
-  if(error)throw error; return data.signedUrl;
-}
-async function previewDoc(id){
-  const d=docs.find(x=>x.id===id);if(!d)return;activePreview=d;
-  $('#previewTitle').textContent=d.name;$('#previewBody').innerHTML='<span class="muted">Preparing secure preview…</span>';openDialog('previewDialog');
-  try{const url=await signedUrl(d); if(d.mime_type==='application/pdf') $('#previewBody').innerHTML=`<iframe src="${url}" title="${esc(d.name)}"></iframe>`; else if(d.mime_type.startsWith('image/')) $('#previewBody').innerHTML=`<img src="${url}" alt="${esc(d.name)}">`; else $('#previewBody').innerHTML='<span class="muted">This file type cannot be previewed in the browser. Use Download.</span>'; $('#previewDownload').onclick=()=>downloadDoc(d.id,url);}catch(err){$('#previewBody').textContent=err.message;}
-}
-async function downloadDoc(id,knownUrl){
-  const d=docs.find(x=>x.id===id);if(!d)return;
-  try{const url=knownUrl||await signedUrl(d);const a=document.createElement('a');a.href=url;a.download=d.name;a.target='_blank';document.body.appendChild(a);a.click();a.remove();toast('Secure download opened.');}catch(err){toast(err.message);}
-}
+const cfg=window.VAULT_CONFIG||{};
+const configured=cfg.supabaseUrl&&!cfg.supabaseUrl.includes('YOUR_')&&cfg.supabaseAnonKey&&!cfg.supabaseAnonKey.includes('YOUR_');
+const supabase=configured?window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseAnonKey):null;
+const bucket=cfg.bucket||'documents',maxBytes=(Number(cfg.maxFileSizeMB)||50)*1024*1024;
+let docs=[],activeCategory='All',activeView='All',activePreview=null,pendingFiles=[];
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const fmtSize=n=>{if(!n)return'0 B';const u=['B','KB','MB','GB'],i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),3);return`${(n/1024**i).toFixed(i?1:0)} ${u[i]}`};
+const iconFor=m=>m?.includes('pdf')?'PDF':m?.startsWith('image/')?'IMG':m?.includes('word')?'DOC':m?.includes('sheet')?'XLS':'FILE';
+const toast=msg=>{const e=$('#toast');e.textContent=msg;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),2600)};
+const authMsg=(msg,error=false)=>{$('#authMessage').textContent=msg;$('#authMessage').style.color=error?'#ffb6b6':''};
+function showApp(s){$('#authView').classList.add('hidden');$('#appView').classList.remove('hidden');$('#userEmail').textContent=s.user.email||'Authenticated';$('#maxSizeLabel').textContent=`${cfg.maxFileSizeMB||50} MB`;loadDocs()}
+function showAuth(){$('#appView').classList.add('hidden');$('#authView').classList.remove('hidden')}
+$('#loginForm').addEventListener('submit',async e=>{e.preventDefault();if(!supabase){authMsg('Setup required: create config.js from config.example.js.',true);return}authMsg('Unlocking…');const{error}=await supabase.auth.signInWithPassword({email:$('#email').value.trim(),password:$('#password').value});if(error)authMsg(error.message,true);else authMsg('')});
+$('#logoutBtn').onclick=async()=>{if(supabase)await supabase.auth.signOut();showAuth()};
+async function loadDocs(){if(!supabase)return;const{data,error}=await supabase.from('documents').select('*').order('created_at',{ascending:false});if(error){toast(error.message);return}docs=data||[];render()}
+function render(){const q=$('#search').value.trim().toLowerCase();let list=docs.filter(d=>activeView==='Trash'?d.deleted_at:!d.deleted_at);if(activeView==='Favorites')list=docs.filter(d=>!d.deleted_at&&d.favorite);if(activeCategory!=='All')list=list.filter(d=>d.category===activeCategory);if(q)list=list.filter(d=>`${d.name} ${d.notes||''} ${d.category} ${d.folder||''}`.toLowerCase().includes(q));const sort=$('#sortSelect').value;list.sort((a,b)=>sort==='oldest'?new Date(a.created_at)-new Date(b.created_at):sort==='name'?a.name.localeCompare(b.name):sort==='largest'?(Number(b.size_bytes)||0)-(Number(a.size_bytes)||0):new Date(b.created_at)-new Date(a.created_at));
+$('#statDocs').textContent=docs.filter(d=>!d.deleted_at).length;$('#statSize').textContent=fmtSize(docs.filter(d=>!d.deleted_at).reduce((a,d)=>a+(Number(d.size_bytes)||0),0));$('#statFav').textContent=docs.filter(d=>!d.deleted_at&&d.favorite).length;$('#statTrash').textContent=docs.filter(d=>d.deleted_at).length;
+$('#documentGrid').innerHTML=list.map(d=>`<article class="doc glass"><div class="doc-top"><div class="file-icon">${iconFor(d.mime_type)}</div><button class="fav ${d.favorite?'active':''}" data-fav="${d.id}" title="Favorite">★</button></div><h4 title="${esc(d.name)}">${esc(d.name)}</h4><div class="doc-meta">${esc(d.folder||'Home')} · ${esc(d.category)} · ${fmtSize(Number(d.size_bytes))} · ${new Date(d.created_at).toLocaleDateString()}</div><p class="doc-note">${esc(d.notes||'No notes added.')}</p><div class="doc-actions">${d.deleted_at?`<button data-restore="${d.id}">Restore</button><button class="danger" data-delete="${d.id}">Delete forever</button>`:`<button data-preview="${d.id}">Preview</button><button data-download="${d.id}">Download</button><button data-edit="${d.id}">Edit</button><button class="danger" data-trash="${d.id}">Trash</button>`}</div></article>`).join('');
+$('#emptyState').classList.toggle('hidden',list.length>0);if(!list.length)$('#emptyState h3').textContent=activeView==='Trash'?'Trash is empty':'No documents here';
+document.querySelectorAll('[data-fav]').forEach(b=>b.onclick=()=>toggleFavorite(b.dataset.fav));document.querySelectorAll('[data-preview]').forEach(b=>b.onclick=()=>previewDoc(b.dataset.preview));document.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>downloadDoc(b.dataset.download));document.querySelectorAll('[data-trash]').forEach(b=>b.onclick=()=>trashDoc(b.dataset.trash));document.querySelectorAll('[data-restore]').forEach(b=>b.onclick=()=>restoreDoc(b.dataset.restore));document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteForever(b.dataset.delete));document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEdit(b.dataset.edit))}
+$('#search').addEventListener('input',render);$('#sortSelect').addEventListener('change',render);
+$('#filters').addEventListener('click',e=>{const b=e.target.closest('.filter');if(!b)return;activeCategory=b.dataset.category;document.querySelectorAll('#filters .filter').forEach(x=>x.classList.remove('active'));b.classList.add('active');render()});
+$('#viewFilters').addEventListener('click',e=>{const b=e.target.closest('.filter');if(!b)return;activeView=b.dataset.view;document.querySelectorAll('#viewFilters .filter').forEach(x=>x.classList.remove('active'));b.classList.add('active');render()});
+async function toggleFavorite(id){const d=docs.find(x=>x.id===id);if(!d)return;const{error}=await supabase.from('documents').update({favorite:!d.favorite}).eq('id',id);if(error)toast(error.message);else{d.favorite=!d.favorite;render()}}
+async function trashDoc(id){if(!confirm('Move this document to Trash?'))return;const{error}=await supabase.from('documents').update({deleted_at:new Date().toISOString()}).eq('id',id);if(error)toast(error.message);else{toast('Moved to Trash.');loadDocs()}}
+async function restoreDoc(id){const{error}=await supabase.from('documents').update({deleted_at:null}).eq('id',id);if(error)toast(error.message);else{toast('Document restored.');loadDocs()}}
+async function deleteForever(id){const d=docs.find(x=>x.id===id);if(!d||!confirm('Delete this file permanently? This cannot be undone.'))return;const rm=await supabase.storage.from(bucket).remove([d.storage_path]);if(rm.error){toast(rm.error.message);return}const{error}=await supabase.from('documents').delete().eq('id',id);if(error){toast(error.message);return}toast('Permanently deleted.');loadDocs()}
+function openDialog(id){$(id).showModal()};document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$(b.dataset.close).close());
+function selectFiles(files){pendingFiles=[...files];$('#selectedFiles').innerHTML=pendingFiles.map(f=>`<div class="selected-file"><span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small></div>`).join('');if(pendingFiles.length)openDialog('uploadDialog')}
+$('#uploadBtn').onclick=()=>{$('#uploadForm').reset();$('#folderInput').value='Home';pendingFiles=[];$('#selectedFiles').innerHTML='';$('#uploadMessage').textContent='';$('#uploadProgress').classList.add('hidden');$('#fileInput').click()};
+$('#dropChoose').onclick=()=>$('#fileInput').click();$('#emptyUpload').onclick=()=>$('#uploadBtn').click();$('#fileInput').addEventListener('change',e=>selectFiles(e.target.files));
+const dz=$('#dropzone');['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('dragging')}));['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('dragging') }));dz.addEventListener('drop',e=>selectFiles(e.dataTransfer.files));
+$('#uploadForm').addEventListener('submit',async e=>{e.preventDefault();if(!pendingFiles.length){$('#uploadMessage').textContent='Choose at least one file.';return}const{data:{user}}=await supabase.auth.getUser();if(!user)return;const folder=$('#folderInput').value.trim()||'Home',category=$('#categoryInput').value,notes=$('#notesInput').value.trim();const invalid=pendingFiles.find(f=>f.size>maxBytes);if(invalid){$('#uploadMessage').textContent=`${invalid.name} is larger than ${cfg.maxFileSizeMB||50} MB.`;return}$('#uploadProgress').classList.remove('hidden');let done=0;for(const file of pendingFiles){$('#uploadMessage').textContent=`Uploading ${done+1} of ${pendingFiles.length}…`;const safe=file.name.replace(/[^a-zA-Z0-9._-]/g,'_'),path=`${user.id}/${crypto.randomUUID()}-${safe}`;const up=await supabase.storage.from(bucket).upload(path,file,{contentType:file.type||'application/octet-stream',upsert:false});if(up.error){$('#uploadMessage').textContent=up.error.message;continue}const ins=await supabase.from('documents').insert({user_id:user.id,name:file.name,storage_path:path,mime_type:file.type||'application/octet-stream',size_bytes:file.size,category,folder,notes});if(ins.error){await supabase.storage.from(bucket).remove([path]);$('#uploadMessage').textContent=ins.error.message;continue}done++;$('#uploadProgress span').style.width=`${Math.round(done/pendingFiles.length*100)}%`}$('#uploadMessage').textContent=`${done} of ${pendingFiles.length} uploaded.`;setTimeout(()=>{$('#uploadDialog').close();loadDocs();toast(`${done} document${done===1?'':'s'} added.`)},500)});
+function openEdit(id){const d=docs.find(x=>x.id===id);if(!d)return;$('#editId').value=id;$('#editName').value=d.name;$('#editFolder').value=d.folder||'Home';$('#editCategory').value=d.category;$('#editNotes').value=d.notes||'';$('#editMessage').textContent='';openDialog('editDialog')}
+$('#editForm').addEventListener('submit',async e=>{e.preventDefault();const id=$('#editId').value;const{error}=await supabase.from('documents').update({name:$('#editName').value.trim(),folder:$('#editFolder').value.trim()||'Home',category:$('#editCategory').value,notes:$('#editNotes').value.trim()}).eq('id',id);if(error){$('#editMessage').textContent=error.message;return}$('#editDialog').close();toast('Document updated.');loadDocs()});
+async function signedUrl(d){const{data,error}=await supabase.storage.from(bucket).createSignedUrl(d.storage_path,300);if(error)throw error;return data.signedUrl}
+async function previewDoc(id){const d=docs.find(x=>x.id===id);if(!d)return;activePreview=d;$('#previewTitle').textContent=d.name;$('#previewBody').innerHTML='<span class="muted">Preparing secure preview…</span>';openDialog('previewDialog');try{const url=await signedUrl(d);if(d.mime_type==='application/pdf')$('#previewBody').innerHTML=`<iframe src="${url}" title="${esc(d.name)}"></iframe>`;else if(d.mime_type.startsWith('image/'))$('#previewBody').innerHTML=`<img src="${url}" alt="${esc(d.name)}">`;else $('#previewBody').innerHTML='<span class="muted">This file type cannot be previewed in the browser. Use Download.</span>';$('#previewDownload').onclick=()=>downloadDoc(d.id,url)}catch(err){$('#previewBody').textContent=err.message}}
+async function downloadDoc(id,knownUrl){const d=docs.find(x=>x.id===id);if(!d)return;try{const url=knownUrl||await signedUrl(d),a=document.createElement('a');a.href=url;a.download=d.name;a.target='_blank';document.body.appendChild(a);a.click();a.remove();toast('Secure download opened.')}catch(err){toast(err.message)}}
 $('#previewDownload').onclick=()=>activePreview&&downloadDoc(activePreview.id);
-
-(async()=>{
-  if(!supabase){authMsg('Create config.js from config.example.js to connect your private vault.',true);return;}
-  const {data:{session}}=await supabase.auth.getSession(); if(session)showApp(session); else showAuth();
-  supabase.auth.onAuthStateChange((_event,s)=>s?showApp(s):showAuth());
-})();
+(async()=>{if(!supabase){authMsg('Create config.js from config.example.js to connect your private vault.',true);return}const{data:{session}}=await supabase.auth.getSession();if(session)showApp(session);else showAuth();supabase.auth.onAuthStateChange((_event,s)=>s?showApp(s):showAuth())})();
