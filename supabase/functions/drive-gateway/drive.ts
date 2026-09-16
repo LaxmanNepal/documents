@@ -138,7 +138,7 @@ export async function uploadFile(config: DriveConfig, file: File, folderId?: str
 }
 
 export async function getFile(config: DriveConfig, fileId: string) {
-  const params = new URLSearchParams({ fields: "id,name,mimeType,size,createdTime,modifiedTime,parents,md5Checksum" });
+  const params = new URLSearchParams({ fields: "id,name,mimeType,size,createdTime,modifiedTime,parents,trashed,md5Checksum" });
   const response = await driveRequest(config, `/files/${encodeURIComponent(fileId)}?${params}`);
   if (!response.ok) throw new Error(`Drive metadata failed: ${response.status}`);
   return response.json();
@@ -165,6 +165,16 @@ export async function trashFile(config: DriveConfig, fileId: string) {
     body: JSON.stringify({ trashed: true }),
   });
   if (!response.ok) throw new Error(`Drive trash failed: ${response.status}`);
+  return response.json();
+}
+
+export async function restoreFile(config: DriveConfig, fileId: string) {
+  const response = await driveRequest(config, `/files/${encodeURIComponent(fileId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trashed: false }),
+  });
+  if (!response.ok) throw new Error(`Drive restore failed: ${response.status}`);
   return response.json();
 }
 
