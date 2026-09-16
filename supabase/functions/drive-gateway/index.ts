@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { createFolder, deleteFile, downloadFile, ensureFolderPath, getFile, listFiles, listFolders, moveFile, trashFile, uploadFile } from "./drive.ts";
+import { createFolder, deleteFile, downloadFile, ensureFolderPath, getFile, listFiles, listFolders, moveFile, restoreFile, trashFile, uploadFile } from "./drive.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -51,6 +51,7 @@ Deno.serve(async (req) => {
     if (action === "ensure-folder") return json({ ok: true, folder: await ensureFolderPath(drive, String(body.path || "")) });
     if (action === "move") return json({ ok: true, file: await moveFile(drive, body.fileId, body.folderId) });
     if (action === "trash") return json({ ok: true, file: await trashFile(drive, body.fileId) });
+    if (action === "restore") return json({ ok: true, file: await restoreFile(drive, body.fileId) });
     if (action === "delete") return json({ ok: true, ...(await deleteFile(drive, body.fileId)) });
     if (action === "download") {
       const response = await downloadFile(drive, body.fileId);
