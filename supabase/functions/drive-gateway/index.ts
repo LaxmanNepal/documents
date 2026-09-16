@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { createFolder, deleteFile, downloadFile, getFile, listFiles, trashFile, uploadFile } from "./drive.ts";
+import { createFolder, deleteFile, downloadFile, ensureFolderPath, getFile, listFiles, listFolders, moveFile, trashFile, uploadFile } from "./drive.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,17 +36,20 @@ Deno.serve(async (req) => {
   if (!configured()) return json({ error: "Google Drive backend is not configured yet." }, 503);
 
   try {
+    const drive = config();
     if (req.method === "GET") {
-      return json({ ok: true, provider: "google-drive", configured: true, rootFolderConfigured: Boolean(Deno.env.get("GOOGLE_DRIVE_ROOT_FOLDER_ID")) });
+      return json({ ok: true, provider: "google-drive", configured: true, rootFolderConfigured: Boolean(drive.rootFolderId) });
     }
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
     const body = await req.json().catch(() => null);
     const action = body?.action;
-    const drive = config();
 
     if (action === "list") return json({ ok: true, ...(await listFiles(drive, body.pageToken)) });
+    if (action === "folders") return json({ ok: true, ...(await listFolders(drive, body.parentId)) });
     if (action === "get") return json({ ok: true, file: await getFile(drive, body.fileId) });
     if (action === "folder") return json({ ok: true, folder: await createFolder(drive, body.name, body.parentId) });
+    if (action === "ensure-folder") return json({ ok: true, folder: await ensureFolderPath(drive, String(body.path || "")) });
+    if (action === "move") return json({ ok: true, file: await moveFile(drive, body.fileId, body.folderId) });
     if (action === "trash") return json({ ok: true, file: await trashFile(drive, body.fileId) });
     if (action === "delete") return json({ ok: true, ...(await deleteFile(drive, body.fileId)) });
     if (action === "download") {
@@ -66,8 +69,9 @@ Deno.serve(async (req) => {
       const form = await req.formData();
       const file = form.get("file");
       const folderId = String(form.get("folderId") || "");
+      const folderPath = String(form.get("folderPath") || "");
       if (!(file instanceof File)) return json({ error: "file is required" }, 400);
-      const uploaded = await uploadFile(drive, file, folderId || undefined);
+      const uploaded = await uploadFile(drive, file, folderId || undefined, folderPath || undefined);
       return json({ ok: true, file: uploaded });
     }
     return json({ error: "Unsupported Drive action" }, 400);
