@@ -18,7 +18,7 @@
     let payload;
     if (options.formData) payload = options.formData;
     else { headers['Content-Type'] = 'application/json'; payload = JSON.stringify({ action, ...body }); }
-    const response = await fetch(gateway, { method: options.method || 'POST', headers, body: payload });
+    const response = await fetch(gateway, { method: 'POST', headers, body: payload });
     if (!response.ok) {
       let message = `Drive request failed (${response.status})`;
       try { const json = await response.json(); message = json.error || json.message || message; } catch (_) {}
@@ -35,10 +35,10 @@
     return response.json();
   }
 
-  async function upload(file, folder) {
+  async function upload(file, folderPath) {
     const form = new FormData();
     form.append('action', 'upload');
-    if (folder) form.append('folder', folder);
+    if (folderPath) form.append('folderPath', folderPath);
     form.append('file', file, file.name);
     return request('upload', {}, { formData: form });
   }
@@ -50,10 +50,13 @@
     gateway,
     status,
     list: (pageToken) => request('list', pageToken ? { pageToken } : {}),
+    folders: (parentId) => request('folders', parentId ? { parentId } : {}),
     get: (fileId) => request('get', { fileId }),
     createFolder: (name, parentId) => request('folder', { name, parentId }),
+    ensureFolder: (path) => request('ensure-folder', { path }),
     upload,
     download,
+    move: (fileId, folderId) => request('move', { fileId, folderId }),
     trash: (fileId) => request('trash', { fileId }),
     remove: (fileId) => request('delete', { fileId })
   };
